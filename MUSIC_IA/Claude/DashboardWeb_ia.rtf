@@ -1,0 +1,342 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2709
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \
+*WEB DASH*\
+"""\
+Web Dashboard per Music Marketing AI\
+Interfaccia grafica locale per interagire con l'AI\
+"""\
+\
+from fastapi import FastAPI, Request\
+from fastapi.responses import HTMLResponse\
+from fastapi.staticfiles import StaticFiles\
+from pydantic import BaseModel\
+import uvicorn\
+\
+app = FastAPI(title="Music Marketing AI Dashboard")\
+\
+# Importa la classe AI\
+from main import MusicMarketingAI\
+\
+# Inizializza AI globale\
+ai_assistant = MusicMarketingAI()\
+\
+class ChatMessage(BaseModel):\
+    message: str\
+\
+class CampaignData(BaseModel):\
+    campaign_name: str\
+    platform: str\
+    spend: float\
+    impressions: int\
+    clicks: int\
+    streams: int\
+\
+@app.get("/", response_class=HTMLResponse)\
+async def dashboard():\
+    return """\
+    <!DOCTYPE html>\
+    <html>\
+    <head>\
+        <title>Music Marketing AI</title>\
+        <style>\
+            * \{ margin: 0; padding: 0; box-sizing: border-box; \}\
+            body \{\
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;\
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\
+                min-height: 100vh;\
+                padding: 20px;\
+            \}\
+            .container \{\
+                max-width: 1200px;\
+                margin: 0 auto;\
+            \}\
+            .header \{\
+                background: rgba(255,255,255,0.95);\
+                padding: 30px;\
+                border-radius: 20px;\
+                margin-bottom: 20px;\
+                box-shadow: 0 10px 40px rgba(0,0,0,0.1);\
+            \}\
+            h1 \{\
+                color: #667eea;\
+                margin-bottom: 10px;\
+            \}\
+            .subtitle \{\
+                color: #666;\
+                font-size: 14px;\
+            \}\
+            .grid \{\
+                display: grid;\
+                grid-template-columns: 2fr 1fr;\
+                gap: 20px;\
+            \}\
+            .card \{\
+                background: rgba(255,255,255,0.95);\
+                padding: 25px;\
+                border-radius: 20px;\
+                box-shadow: 0 10px 40px rgba(0,0,0,0.1);\
+            \}\
+            .chat-container \{\
+                height: 600px;\
+                display: flex;\
+                flex-direction: column;\
+            \}\
+            .messages \{\
+                flex: 1;\
+                overflow-y: auto;\
+                padding: 20px;\
+                background: #f8f9fa;\
+                border-radius: 10px;\
+                margin-bottom: 20px;\
+            \}\
+            .message \{\
+                margin-bottom: 15px;\
+                padding: 12px 18px;\
+                border-radius: 15px;\
+                max-width: 80%;\
+                animation: slideIn 0.3s ease;\
+            \}\
+            @keyframes slideIn \{\
+                from \{ opacity: 0; transform: translateY(10px); \}\
+                to \{ opacity: 1; transform: translateY(0); \}\
+            \}\
+            .user \{ \
+                background: #667eea; \
+                color: white; \
+                margin-left: auto;\
+                text-align: right;\
+            \}\
+            .ai \{ \
+                background: white; \
+                border: 1px solid #e0e0e0;\
+            \}\
+            .input-group \{\
+                display: flex;\
+                gap: 10px;\
+            \}\
+            input, textarea \{\
+                flex: 1;\
+                padding: 12px 18px;\
+                border: 2px solid #e0e0e0;\
+                border-radius: 10px;\
+                font-size: 14px;\
+                transition: all 0.3s;\
+            \}\
+            input:focus, textarea:focus \{\
+                outline: none;\
+                border-color: #667eea;\
+            \}\
+            button \{\
+                padding: 12px 30px;\
+                background: #667eea;\
+                color: white;\
+                border: none;\
+                border-radius: 10px;\
+                cursor: pointer;\
+                font-weight: 600;\
+                transition: all 0.3s;\
+            \}\
+            button:hover \{\
+                background: #5568d3;\
+                transform: translateY(-2px);\
+                box-shadow: 0 5px 20px rgba(102,126,234,0.4);\
+            \}\
+            .quick-actions \{\
+                display: grid;\
+                gap: 10px;\
+            \}\
+            .action-btn \{\
+                width: 100%;\
+                padding: 15px;\
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\
+                color: white;\
+                border: none;\
+                border-radius: 10px;\
+                cursor: pointer;\
+                font-size: 14px;\
+                font-weight: 600;\
+                transition: all 0.3s;\
+            \}\
+            .action-btn:hover \{\
+                transform: translateY(-2px);\
+                box-shadow: 0 5px 20px rgba(102,126,234,0.4);\
+            \}\
+            .stats \{\
+                display: grid;\
+                grid-template-columns: 1fr 1fr;\
+                gap: 15px;\
+                margin-top: 20px;\
+            \}\
+            .stat-card \{\
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\
+                padding: 20px;\
+                border-radius: 10px;\
+                color: white;\
+                text-align: center;\
+            \}\
+            .stat-value \{\
+                font-size: 28px;\
+                font-weight: bold;\
+                margin-top: 10px;\
+            \}\
+        </style>\
+    </head>\
+    <body>\
+        <div class="container">\
+            <div class="header">\
+                <h1>\uc0\u55356 \u57269  Music Marketing AI</h1>\
+                <p class="subtitle">Assistente locale per strategie, analisi e content creation</p>\
+            </div>\
+            \
+            <div class="grid">\
+                <div class="card">\
+                    <h2 style="margin-bottom: 20px;">\uc0\u55357 \u56492  Chat con AI</h2>\
+                    <div class="chat-container">\
+                        <div class="messages" id="messages">\
+                            <div class="message ai">\
+                                Ciao! Sono il tuo assistente di marketing musicale. \
+                                Posso aiutarti con analisi campagne, generazione contenuti, \
+                                strategie e competitor research. Come posso aiutarti?\
+                            </div>\
+                        </div>\
+                        <div class="input-group">\
+                            <input type="text" id="userInput" \
+                                   placeholder="Scrivi qui la tua domanda..."\
+                                   onkeypress="if(event.key==='Enter') sendMessage()">\
+                            <button onclick="sendMessage()">Invia</button>\
+                        </div>\
+                    </div>\
+                </div>\
+                \
+                <div>\
+                    <div class="card">\
+                        <h3 style="margin-bottom: 15px;">\uc0\u9889  Azioni Rapide</h3>\
+                        <div class="quick-actions">\
+                            <button class="action-btn" onclick="quickAction('Analizza le performance delle ultime 3 campagne')">\
+                                \uc0\u55357 \u56522  Analizza Campagne\
+                            </button>\
+                            <button class="action-btn" onclick="quickAction('Genera un copy Meta Ads per il lancio di un nuovo singolo trap')">\
+                                \uc0\u9997 \u65039  Genera Copy Ads\
+                            </button>\
+                            <button class="action-btn" onclick="quickAction('Crea un pitch Spotify per playlist editoriali trap')">\
+                                \uc0\u55356 \u57255  Pitch Spotify\
+                            </button>\
+                            <button class="action-btn" onclick="quickAction('Dammi 5 idee contenuto per Instagram questa settimana')">\
+                                \uc0\u55357 \u56561  Ideas Instagram\
+                            </button>\
+                            <button class="action-btn" onclick="quickAction('Quali sono i trend TikTok nel rap italiano?')">\
+                                \uc0\u55357 \u56613  Trend Analysis\
+                            </button>\
+                        </div>\
+                    </div>\
+                    \
+                    <div class="card" style="margin-top: 20px;">\
+                        <h3>\uc0\u55357 \u56520  Stats Rapide</h3>\
+                        <div class="stats">\
+                            <div class="stat-card">\
+                                <div>Campagne</div>\
+                                <div class="stat-value">12</div>\
+                            </div>\
+                            <div class="stat-card">\
+                                <div>ROAS Medio</div>\
+                                <div class="stat-value">2.4x</div>\
+                            </div>\
+                        </div>\
+                    </div>\
+                </div>\
+            </div>\
+        </div>\
+        \
+        <script>\
+            async function sendMessage() \{\
+                const input = document.getElementById('userInput');\
+                const message = input.value.trim();\
+                if (!message) return;\
+                \
+                // Mostra messaggio utente\
+                addMessage(message, 'user');\
+                input.value = '';\
+                \
+                // Mostra loading\
+                const loadingId = addMessage('Sto pensando...', 'ai');\
+                \
+                try \{\
+                    const response = await fetch('/chat', \{\
+                        method: 'POST',\
+                        headers: \{'Content-Type': 'application/json'\},\
+                        body: JSON.stringify(\{message: message\})\
+                    \});\
+                    \
+                    const data = await response.json();\
+                    \
+                    // Rimuovi loading e mostra risposta\
+                    document.getElementById(loadingId).remove();\
+                    addMessage(data.response, 'ai');\
+                    \
+                \} catch (error) \{\
+                    document.getElementById(loadingId).remove();\
+                    addMessage('Errore di connessione. Riprova.', 'ai');\
+                \}\
+            \}\
+            \
+            function addMessage(text, type) \{\
+                const messages = document.getElementById('messages');\
+                const div = document.createElement('div');\
+                const id = 'msg-' + Date.now();\
+                div.id = id;\
+                div.className = 'message ' + type;\
+                div.textContent = text;\
+                messages.appendChild(div);\
+                messages.scrollTop = messages.scrollHeight;\
+                return id;\
+            \}\
+            \
+            function quickAction(prompt) \{\
+                document.getElementById('userInput').value = prompt;\
+                sendMessage();\
+            \}\
+        </script>\
+    </body>\
+    </html>\
+    """\
+\
+@app.post("/chat")\
+async def chat(message: ChatMessage):\
+    """Endpoint per chat con AI"""\
+    try:\
+        response = ai_assistant.chat(message.message)\
+        return \{"response": response, "success": True\}\
+    except Exception as e:\
+        return \{"response": f"Errore: \{str(e)\}", "success": False\}\
+\
+@app.post("/add-campaign")\
+async def add_campaign(campaign: CampaignData):\
+    """Endpoint per salvare nuova campagna"""\
+    campaign_dict = \{\
+        "campaign_name": campaign.campaign_name,\
+        "date": str(datetime.now().date()),\
+        "platform": campaign.platform,\
+        "spend": campaign.spend,\
+        "impressions": campaign.impressions,\
+        "clicks": campaign.clicks,\
+        "ctr": (campaign.clicks / campaign.impressions * 100) if campaign.impressions > 0 else 0,\
+        "cpm": (campaign.spend / campaign.impressions * 1000) if campaign.impressions > 0 else 0,\
+        "streams_generated": campaign.streams,\
+        "roas": (campaign.streams * 0.004 / campaign.spend) if campaign.spend > 0 else 0  # Stima\
+    \}\
+    \
+    ai_assistant.save_campaign_data(campaign_dict)\
+    return \{"success": True, "message": "Campagna salvata"\}\
+\
+if __name__ == "__main__":\
+    print("\\n\uc0\u55357 \u56960  Avvio dashboard...")\
+    print("\uc0\u55357 \u56525  Apri: http://localhost:8000")\
+    print("\uc0\u9000 \u65039   CTRL+C per fermare\\n")\
+    \
+    uvicorn.run(app, host="0.0.0.0", port=8000)}

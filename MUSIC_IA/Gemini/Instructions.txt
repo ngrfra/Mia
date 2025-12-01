@@ -1,0 +1,19 @@
+Assicurati di avere il file: " requirements.txt "
+
+Apri terminale
+
+Installa:
+
+1) pip install -r requirements.txt
+
+
+Assicurati di avere il modello :
+
+2) ollama run mistral-nemo
+
+Come usarlo (Facile come bere un bicchier d'acqua)
+Salva il file come yangkidd_zen.py.
+
+Apri il terminale (sì, solo per lanciarlo).
+
+Scrivi: streamlit run yangkidd_zen.py

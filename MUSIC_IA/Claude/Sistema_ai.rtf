@@ -1,0 +1,1243 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2709
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 """\
+AI Marketing Musicale - Sistema Professionale Completo\
+Include: API integrations, predictive analytics, auto-reporting, competitor tracking\
+Sviluppato per music manager professionisti\
+"""\
+\
+import pandas as pd\
+import numpy as np\
+import json\
+from datetime import datetime, timedelta\
+from pathlib import Path\
+import sqlite3\
+from typing import Dict, List, Optional\
+import warnings\
+warnings.filterwarnings('ignore')\
+\
+# LangChain & AI\
+from langchain_community.llms import Ollama\
+from langchain.chains import RetrievalQA\
+from langchain_community.vectorstores import Chroma\
+from langchain_community.embeddings import HuggingFaceEmbeddings\
+from langchain.prompts import PromptTemplate\
+from langchain.memory import ConversationBufferMemory\
+from langchain.agents import initialize_agent, Tool, AgentType\
+from langchain.text_splitter import RecursiveCharacterTextSplitter\
+\
+# API Clients (opzionali - installare se necessario)\
+try:\
+    import spotipy\
+    from spotipy.oauth2 import SpotifyClientCredentials\
+    SPOTIFY_AVAILABLE = True\
+except:\
+    SPOTIFY_AVAILABLE = False\
+\
+try:\
+    import instaloader\
+    INSTAGRAM_AVAILABLE = True\
+except:\
+    INSTAGRAM_AVAILABLE = False\
+\
+try:\
+    import requests\
+    from requests.adapters import HTTPAdapter\
+    from urllib3.util.retry import Retry\
+    API_AVAILABLE = True\
+except:\
+    API_AVAILABLE = False\
+\
+\
+class DatabaseManager:\
+    """Gestisce database SQLite per storico campagne e analytics"""\
+    \
+    def __init__(self, db_path: Path):\
+        self.db_path = db_path\
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)\
+        self._init_tables()\
+    \
+    def _init_tables(self):\
+        """Crea tabelle se non esistono"""\
+        cursor = self.conn.cursor()\
+        \
+        # Tabella campagne\
+        cursor.execute("""\
+            CREATE TABLE IF NOT EXISTS campaigns (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                campaign_name TEXT NOT NULL,\
+                artist TEXT,\
+                release_type TEXT,\
+                platform TEXT NOT NULL,\
+                date DATE NOT NULL,\
+                spend REAL,\
+                impressions INTEGER,\
+                clicks INTEGER,\
+                ctr REAL,\
+                cpm REAL,\
+                cpc REAL,\
+                conversions INTEGER,\
+                conversion_type TEXT,\
+                roas REAL,\
+                notes TEXT,\
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\
+            )\
+        """)\
+        \
+        # Tabella streaming metrics\
+        cursor.execute("""\
+            CREATE TABLE IF NOT EXISTS streaming_metrics (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                artist TEXT NOT NULL,\
+                track_name TEXT,\
+                date DATE NOT NULL,\
+                spotify_streams INTEGER,\
+                spotify_saves INTEGER,\
+                spotify_playlist_adds INTEGER,\
+                youtube_views INTEGER,\
+                apple_plays INTEGER,\
+                total_streams INTEGER,\
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\
+            )\
+        """)\
+        \
+        # Tabella competitor tracking\
+        cursor.execute("""\
+            CREATE TABLE IF NOT EXISTS competitors (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                competitor_name TEXT NOT NULL,\
+                date DATE NOT NULL,\
+                instagram_followers INTEGER,\
+                instagram_engagement_rate REAL,\
+                spotify_monthly_listeners INTEGER,\
+                youtube_subscribers INTEGER,\
+                recent_release TEXT,\
+                strategy_notes TEXT,\
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\
+            )\
+        """)\
+        \
+        # Tabella A/B tests\
+        cursor.execute("""\
+            CREATE TABLE IF NOT EXISTS ab_tests (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                test_name TEXT NOT NULL,\
+                platform TEXT NOT NULL,\
+                variant_a TEXT,\
+                variant_b TEXT,\
+                start_date DATE,\
+                end_date DATE,\
+                winner TEXT,\
+                confidence REAL,\
+                metrics JSON,\
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\
+            )\
+        """)\
+        \
+        self.conn.commit()\
+    \
+    def add_campaign(self, data: Dict):\
+        """Salva campagna"""\
+        cursor = self.conn.cursor()\
+        cursor.execute("""\
+            INSERT INTO campaigns (\
+                campaign_name, artist, release_type, platform, date,\
+                spend, impressions, clicks, ctr, cpm, cpc,\
+                conversions, conversion_type, roas, notes\
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\
+        """, (\
+            data.get('campaign_name'),\
+            data.get('artist'),\
+            data.get('release_type'),\
+            data.get('platform'),\
+            data.get('date'),\
+            data.get('spend'),\
+            data.get('impressions'),\
+            data.get('clicks'),\
+            data.get('ctr'),\
+            data.get('cpm'),\
+            data.get('cpc'),\
+            data.get('conversions'),\
+            data.get('conversion_type'),\
+            data.get('roas'),\
+            data.get('notes')\
+        ))\
+        self.conn.commit()\
+        return cursor.lastrowid\
+    \
+    def get_campaigns(self, days: int = 30, platform: Optional[str] = None) -> pd.DataFrame:\
+        """Recupera campagne recenti"""\
+        query = f"""\
+            SELECT * FROM campaigns \
+            WHERE date >= date('now', '-\{days\} days')\
+        """\
+        if platform:\
+            query += f" AND platform = '\{platform\}'"\
+        query += " ORDER BY date DESC"\
+        \
+        return pd.read_sql_query(query, self.conn)\
+    \
+    def add_streaming_data(self, data: Dict):\
+        """Salva metriche streaming"""\
+        cursor = self.conn.cursor()\
+        cursor.execute("""\
+            INSERT INTO streaming_metrics (\
+                artist, track_name, date,\
+                spotify_streams, spotify_saves, spotify_playlist_adds,\
+                youtube_views, apple_plays, total_streams\
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\
+        """, (\
+            data.get('artist'),\
+            data.get('track_name'),\
+            data.get('date'),\
+            data.get('spotify_streams', 0),\
+            data.get('spotify_saves', 0),\
+            data.get('spotify_playlist_adds', 0),\
+            data.get('youtube_views', 0),\
+            data.get('apple_plays', 0),\
+            data.get('total_streams', 0)\
+        ))\
+        self.conn.commit()\
+    \
+    def track_competitor(self, data: Dict):\
+        """Traccia competitor"""\
+        cursor = self.conn.cursor()\
+        cursor.execute("""\
+            INSERT INTO competitors (\
+                competitor_name, date,\
+                instagram_followers, instagram_engagement_rate,\
+                spotify_monthly_listeners, youtube_subscribers,\
+                recent_release, strategy_notes\
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)\
+        """, (\
+            data.get('competitor_name'),\
+            data.get('date'),\
+            data.get('instagram_followers'),\
+            data.get('instagram_engagement_rate'),\
+            data.get('spotify_monthly_listeners'),\
+            data.get('youtube_subscribers'),\
+            data.get('recent_release'),\
+            data.get('strategy_notes')\
+        ))\
+        self.conn.commit()\
+\
+\
+class PredictiveAnalytics:\
+    """Algoritmi predittivi per marketing musicale"""\
+    \
+    @staticmethod\
+    def predict_stream_growth(historical_data: pd.DataFrame, days_ahead: int = 7) -> Dict:\
+        """Predice crescita streams usando moving average + trend"""\
+        if len(historical_data) < 7:\
+            return \{"error": "Servono almeno 7 giorni di dati"\}\
+        \
+        df = historical_data.copy()\
+        df['date'] = pd.to_datetime(df['date'])\
+        df = df.sort_values('date')\
+        \
+        # Moving average 7 giorni\
+        df['ma7'] = df['total_streams'].rolling(window=7).mean()\
+        \
+        # Calcola trend (growth rate medio)\
+        daily_growth = df['total_streams'].pct_change().mean()\
+        \
+        # Predizione\
+        last_value = df['total_streams'].iloc[-1]\
+        predictions = []\
+        \
+        for i in range(1, days_ahead + 1):\
+            pred = last_value * (1 + daily_growth) ** i\
+            predictions.append(\{\
+                'day': i,\
+                'predicted_streams': int(pred),\
+                'confidence': max(0.5, 1 - (i * 0.1))  # Confidenza decresce\
+            \})\
+        \
+        return \{\
+            'predictions': predictions,\
+            'trend': 'crescita' if daily_growth > 0 else 'decrescita',\
+            'daily_growth_rate': round(daily_growth * 100, 2)\
+        \}\
+    \
+    @staticmethod\
+    def optimize_budget_allocation(campaigns_data: pd.DataFrame) -> Dict:\
+        """Ottimizza allocazione budget tra piattaforme basato su ROAS"""\
+        if campaigns_data.empty:\
+            return \{"error": "Nessun dato campagne"\}\
+        \
+        # Calcola ROAS medio per piattaforma\
+        platform_performance = campaigns_data.groupby('platform').agg(\{\
+            'roas': 'mean',\
+            'spend': 'sum',\
+            'conversions': 'sum'\
+        \}).round(2)\
+        \
+        # Calcola peso basato su ROAS\
+        total_roas = platform_performance['roas'].sum()\
+        platform_performance['budget_weight'] = (\
+            platform_performance['roas'] / total_roas * 100\
+        ).round(1)\
+        \
+        recommendations = []\
+        for platform, row in platform_performance.iterrows():\
+            recommendations.append(\{\
+                'platform': platform,\
+                'current_roas': row['roas'],\
+                'recommended_budget_percentage': row['budget_weight'],\
+                'rationale': f"ROAS \{row['roas']\}x - \{'Aumentare' if row['roas'] > 2 else 'Mantenere' if row['roas'] > 1.5 else 'Ridurre'\} investimento"\
+            \})\
+        \
+        return \{\
+            'recommendations': recommendations,\
+            'best_platform': platform_performance['roas'].idxmax(),\
+            'worst_platform': platform_performance['roas'].idxmin()\
+        \}\
+    \
+    @staticmethod\
+    def detect_viral_potential(engagement_data: List[Dict]) -> Dict:\
+        """Rileva potenziale virale basato su engagement velocity"""\
+        if len(engagement_data) < 3:\
+            return \{"viral_score": 0, "status": "dati insufficienti"\}\
+        \
+        # Calcola velocit\'e0 di crescita\
+        velocities = []\
+        for i in range(1, len(engagement_data)):\
+            time_diff = (engagement_data[i]['timestamp'] - engagement_data[i-1]['timestamp']).seconds / 3600\
+            engagement_diff = engagement_data[i]['engagement'] - engagement_data[i-1]['engagement']\
+            velocity = engagement_diff / time_diff if time_diff > 0 else 0\
+            velocities.append(velocity)\
+        \
+        avg_velocity = np.mean(velocities)\
+        acceleration = np.mean(np.diff(velocities)) if len(velocities) > 1 else 0\
+        \
+        # Calcola viral score (0-100)\
+        viral_score = min(100, (avg_velocity * 10 + acceleration * 20))\
+        \
+        status = "\uc0\u55357 \u56613  Virale!" if viral_score > 70 else "\u55357 \u56520  In crescita" if viral_score > 40 else "\u55357 \u56522  Normale"\
+        \
+        return \{\
+            "viral_score": round(viral_score, 1),\
+            "status": status,\
+            "avg_velocity": round(avg_velocity, 2),\
+            "acceleration": round(acceleration, 2),\
+            "action": "Amplificare subito con ads" if viral_score > 70 else "Monitorare" if viral_score > 40 else "Continuare strategia normale"\
+        \}\
+\
+\
+class APIIntegrator:\
+    """Integrazione con API esterne (Spotify, Instagram, Meta, TikTok)"""\
+    \
+    def __init__(self, config: Dict):\
+        self.config = config\
+        self.session = self._create_session()\
+    \
+    def _create_session(self):\
+        """Session con retry automatico"""\
+        session = requests.Session() if API_AVAILABLE else None\
+        if session:\
+            retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])\
+            adapter = HTTPAdapter(max_retries=retry)\
+            session.mount("http://", adapter)\
+            session.mount("https://", adapter)\
+        return session\
+    \
+    def get_spotify_artist_data(self, artist_id: str) -> Dict:\
+        """Recupera dati artista Spotify"""\
+        if not SPOTIFY_AVAILABLE or not self.config.get('spotify_client_id'):\
+            return \{"error": "Spotify API non configurata"\}\
+        \
+        try:\
+            sp = spotipy.Spotify(client_credentials_manager=SpotifyClientCredentials(\
+                client_id=self.config['spotify_client_id'],\
+                client_secret=self.config['spotify_client_secret']\
+            ))\
+            \
+            artist = sp.artist(artist_id)\
+            \
+            return \{\
+                'name': artist['name'],\
+                'followers': artist['followers']['total'],\
+                'popularity': artist['popularity'],\
+                'genres': artist['genres'],\
+                'monthly_listeners': 'Non disponibile tramite API pubblica'\
+            \}\
+        except Exception as e:\
+            return \{"error": str(e)\}\
+    \
+    def get_instagram_profile_stats(self, username: str) -> Dict:\
+        """Scrape stats Instagram (no API ufficiale necessaria)"""\
+        if not INSTAGRAM_AVAILABLE:\
+            return \{"error": "Instaloader non installato"\}\
+        \
+        try:\
+            loader = instaloader.Instaloader()\
+            profile = instaloader.Profile.from_username(loader.context, username)\
+            \
+            return \{\
+                'username': profile.username,\
+                'followers': profile.followers,\
+                'following': profile.followees,\
+                'posts': profile.mediacount,\
+                'engagement_rate': round((profile.get_engagement_rate() * 100), 2) if hasattr(profile, 'get_engagement_rate') else 'N/A',\
+                'biography': profile.biography\
+            \}\
+        except Exception as e:\
+            return \{"error": str(e)\}\
+    \
+    def analyze_meta_ads_performance(self, account_id: str, access_token: str) -> Dict:\
+        """Recupera performance Meta Ads"""\
+        if not API_AVAILABLE:\
+            return \{"error": "Requests non disponibile"\}\
+        \
+        try:\
+            url = f"https://graph.facebook.com/v18.0/act_\{account_id\}/insights"\
+            params = \{\
+                'access_token': access_token,\
+                'fields': 'campaign_name,impressions,clicks,spend,ctr,cpm,cpc,conversions',\
+                'time_range': json.dumps(\{'since': '2024-01-01', 'until': '2024-12-31'\})\
+            \}\
+            \
+            response = self.session.get(url, params=params)\
+            data = response.json()\
+            \
+            if 'data' in data:\
+                return \{'campaigns': data['data'], 'success': True\}\
+            return \{'error': data.get('error', \{\}).get('message', 'Unknown error')\}\
+        \
+        except Exception as e:\
+            return \{"error": str(e)\}\
+\
+\
+class AutoReporter:\
+    """Generazione automatica report settimanali/mensili"""\
+    \
+    def __init__(self, db: DatabaseManager):\
+        self.db = db\
+    \
+    def generate_weekly_report(self, artist: str = None) -> str:\
+        """Genera report settimanale"""\
+        # Recupera dati ultimi 7 giorni\
+        campaigns = self.db.get_campaigns(days=7)\
+        \
+        if campaigns.empty:\
+            return "\uc0\u55357 \u56522  REPORT SETTIMANALE\\n\\nNessuna campagna attiva negli ultimi 7 giorni."\
+        \
+        # Filtra per artista se specificato\
+        if artist:\
+            campaigns = campaigns[campaigns['artist'] == artist]\
+        \
+        # Calcola metriche\
+        total_spend = campaigns['spend'].sum()\
+        total_impressions = campaigns['impressions'].sum()\
+        total_clicks = campaigns['clicks'].sum()\
+        avg_ctr = campaigns['ctr'].mean()\
+        avg_roas = campaigns['roas'].mean()\
+        \
+        # Best/worst campaign\
+        best_campaign = campaigns.loc[campaigns['roas'].idxmax()] if not campaigns.empty else None\
+        worst_campaign = campaigns.loc[campaigns['roas'].idxmin()] if not campaigns.empty else None\
+        \
+        report = f"""\
+\uc0\u55357 \u56522  REPORT SETTIMANALE - \{datetime.now().strftime('%d/%m/%Y')\}\
+\{'='*60\}\
+\
+\uc0\u55357 \u56496  BUDGET & PERFORMANCE\
+  \'95 Spesa totale: \'80\{total_spend:,.2f\}\
+  \'95 Impressions: \{total_impressions:,\}\
+  \'95 Click: \{total_clicks:,\}\
+  \'95 CTR medio: \{avg_ctr:.2f\}%\
+  \'95 ROAS medio: \{avg_roas:.2f\}x\
+\
+\uc0\u55356 \u57286  CAMPAGNA MIGLIORE\
+  \'95 Nome: \{best_campaign['campaign_name'] if best_campaign is not None else 'N/A'\}\
+  \'95 Piattaforma: \{best_campaign['platform'] if best_campaign is not None else 'N/A'\}\
+  \'95 ROAS: \{best_campaign['roas']:.2f\}x\
+  \'95 CTR: \{best_campaign['ctr']:.2f\}%\
+\
+\uc0\u9888 \u65039  CAMPAGNA DA OTTIMIZZARE\
+  \'95 Nome: \{worst_campaign['campaign_name'] if worst_campaign is not None else 'N/A'\}\
+  \'95 Piattaforma: \{worst_campaign['platform'] if worst_campaign is not None else 'N/A'\}\
+  \'95 ROAS: \{worst_campaign['roas']:.2f\}x\
+\
+\uc0\u55357 \u56520  RACCOMANDAZIONI\
+"""\
+        \
+        # Aggiungi raccomandazioni basate su dati\
+        if avg_roas < 1.5:\
+            report += "  \uc0\u9888 \u65039  ROAS sotto target (< 1.5x) - Rivedi targeting e creative\\n"\
+        if avg_ctr < 1.0:\
+            report += "  \uc0\u9888 \u65039  CTR basso (< 1%) - Testa nuovi copy e immagini\\n"\
+        if total_spend > 1000 and avg_roas > 2.5:\
+            report += "  \uc0\u9989  Performance eccellente - Considera di scalare budget\\n"\
+        \
+        # Performance per piattaforma\
+        platform_performance = campaigns.groupby('platform').agg(\{\
+            'spend': 'sum',\
+            'roas': 'mean'\
+        \}).round(2)\
+        \
+        report += "\\n\uc0\u55357 \u56561  PERFORMANCE PER PIATTAFORMA\\n"\
+        for platform, row in platform_performance.iterrows():\
+            report += f"  \'95 \{platform\}: \'80\{row['spend']:.2f\} | ROAS \{row['roas']:.2f\}x\\n"\
+        \
+        return report\
+    \
+    def generate_monthly_summary(self) -> str:\
+        """Genera summary mensile completo"""\
+        campaigns = self.db.get_campaigns(days=30)\
+        \
+        if campaigns.empty:\
+            return "Nessun dato per il mese corrente."\
+        \
+        # Metriche aggregate\
+        total_spend = campaigns['spend'].sum()\
+        total_conversions = campaigns['conversions'].sum()\
+        avg_roas = campaigns['roas'].mean()\
+        \
+        # Trend analysis\
+        campaigns['date'] = pd.to_datetime(campaigns['date'])\
+        weekly_spend = campaigns.groupby(pd.Grouper(key='date', freq='W'))['spend'].sum()\
+        trend = "crescita" if weekly_spend.iloc[-1] > weekly_spend.iloc[0] else "decrescita"\
+        \
+        summary = f"""\
+\uc0\u55357 \u56520  SUMMARY MENSILE - \{datetime.now().strftime('%B %Y')\}\
+\{'='*60\}\
+\
+\uc0\u55357 \u56508  OVERVIEW FINANZIARIO\
+  \'95 Budget totale investito: \'80\{total_spend:,.2f\}\
+  \'95 Conversioni generate: \{total_conversions:,\}\
+  \'95 ROAS medio mensile: \{avg_roas:.2f\}x\
+  \'95 Costo per conversione: \'80\{(total_spend/total_conversions if total_conversions > 0 else 0):.2f\}\
+\
+\uc0\u55357 \u56522  TREND\
+  \'95 Andamento spesa: \{trend\}\
+  \'95 Settimane attive: \{len(weekly_spend)\}\
+  \
+\uc0\u55356 \u57263  PROSSIMI STEP\
+  1. Analizzare campagne con ROAS > 3x per scaling\
+  2. Pausare/ottimizzare campagne con ROAS < 1x\
+  3. Testare nuove audience su piattaforme migliori\
+"""\
+        \
+        return summary\
+\
+\
+class MusicMarketingAIPro:\
+    """Sistema AI completo con tutte le funzionalit\'e0 enterprise"""\
+    \
+    def __init__(self, model_name: str = "llama3.1:8b", config: Dict = None):\
+        print("\uc0\u55357 \u56960  Inizializzazione Music Marketing AI Pro...")\
+        \
+        # Setup directories\
+        self.base_dir = Path("marketing_ai_pro")\
+        self.base_dir.mkdir(exist_ok=True)\
+        \
+        # Database\
+        print("\uc0\u55357 \u56522  Inizializzazione database...")\
+        self.db = DatabaseManager(self.base_dir / "marketing.db")\
+        \
+        # LLM\
+        print("\uc0\u55358 \u56598  Caricamento modello AI...")\
+        self.llm = Ollama(\
+            model=model_name,\
+            temperature=0.7,\
+            num_ctx=4096\
+        )\
+        \
+        # Embeddings\
+        self.embeddings = HuggingFaceEmbeddings(\
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"\
+        )\
+        \
+        # Vector DB\
+        print("\uc0\u55357 \u56589  Inizializzazione knowledge base...")\
+        self.vectordb = self._init_vectordb()\
+        \
+        # Memory\
+        self.memory = ConversationBufferMemory(\
+            memory_key="chat_history",\
+            return_messages=True\
+        )\
+        \
+        # Moduli avanzati\
+        self.analytics = PredictiveAnalytics()\
+        self.api = APIIntegrator(config or \{\})\
+        self.reporter = AutoReporter(self.db)\
+        \
+        # Tools\
+        print("\uc0\u55357 \u57056 \u65039   Configurazione tools...")\
+        self.tools = self._create_advanced_tools()\
+        \
+        # Agent\
+        self.agent = initialize_agent(\
+            self.tools,\
+            self.llm,\
+            agent=AgentType.CONVERSATIONAL_REACT_DESCRIPTION,\
+            memory=self.memory,\
+            verbose=True,\
+            max_iterations=5\
+        )\
+        \
+        print("\uc0\u9989  Sistema pronto!\\n")\
+    \
+    def _init_vectordb(self):\
+        persist_dir = self.base_dir / "knowledge_base"\
+        persist_dir.mkdir(exist_ok=True)\
+        return Chroma(\
+            embedding_function=self.embeddings,\
+            persist_directory=str(persist_dir)\
+        )\
+    \
+    def _create_advanced_tools(self) -> List[Tool]:\
+        """Crea suite completa di tools professionali"""\
+        \
+        def advanced_campaign_analysis(query: str) -> str:\
+            """Analisi avanzata campagne con predictive insights"""\
+            try:\
+                campaigns = self.db.get_campaigns(days=30)\
+                \
+                if campaigns.empty:\
+                    return "Nessuna campagna trovata. Aggiungi dati con add_campaign()."\
+                \
+                # Stats base\
+                stats = \{\
+                    'total_campaigns': len(campaigns),\
+                    'total_spend': float(campaigns['spend'].sum()),\
+                    'avg_roas': float(campaigns['roas'].mean()),\
+                    'best_platform': campaigns.groupby('platform')['roas'].mean().idxmax()\
+                \}\
+                \
+                # Budget optimization\
+                optimization = self.analytics.optimize_budget_allocation(campaigns)\
+                \
+                result = f"""\
+\uc0\u55357 \u56622  PREDICTIVE FORECAST\
+\
+\uc0\u55357 \u56520  TREND ATTUALE:\
+\'95 \{predictions['trend'].upper()\}\
+\'95 Growth rate giornaliero: \{predictions['daily_growth_rate']\}%\
+\
+\uc0\u55356 \u57263  PREVISIONI 7 GIORNI:\
+"""\
+            for pred in predictions['predictions']:\
+                result += f"\\nGiorno +\{pred['day']\}: \{pred['predicted_streams']:,\} streams (confidence: \{pred['confidence']:.0%\})"\
+            \
+            return result\
+        \
+        def ab_test_analyzer(test_data: str) -> str:\
+            """Analizza risultati A/B test e determina winner"""\
+            \
+            # Parse test data (formato: variant_a:clicks:conversions variant_b:clicks:conversions)\
+            try:\
+                parts = test_data.split()\
+                if len(parts) != 2:\
+                    return "Formato: 'variant_a:clicks:conversions variant_b:clicks:conversions'"\
+                \
+                a_data = parts[0].split(':')\
+                b_data = parts[1].split(':')\
+                \
+                a_clicks, a_conv = int(a_data[1]), int(a_data[2])\
+                b_clicks, b_conv = int(b_data[1]), int(b_data[2])\
+                \
+                a_cr = (a_conv / a_clicks * 100) if a_clicks > 0 else 0\
+                b_cr = (b_conv / b_clicks * 100) if b_clicks > 0 else 0\
+                \
+                # Calcola significance (simplified z-test)\
+                diff = abs(a_cr - b_cr)\
+                confidence = min(99, diff * 10)  # Semplificato\
+                \
+                winner = "Variant A" if a_cr > b_cr else "Variant B"\
+                \
+                return f"""\
+\uc0\u55358 \u56810  A/B TEST RESULTS\
+\
+VARIANT A:\
+\'95 Click: \{a_clicks:,\}\
+\'95 Conversions: \{a_conv\}\
+\'95 Conversion rate: \{a_cr:.2f\}%\
+\
+VARIANT B:\
+\'95 Click: \{b_clicks:,\}\
+\'95 Conversions: \{b_conv\}\
+\'95 Conversion rate: \{b_cr:.2f\}%\
+\
+\uc0\u55356 \u57286  WINNER: \{winner\}\
+\uc0\u55357 \u56522  Difference: \{diff:.2f\}%\
+\uc0\u55357 \u56520  Confidence: \{confidence:.0f\}%\
+\
+\uc0\u55357 \u56481  RACCOMANDAZIONE:\
+\{"\uc0\u9989  Implementa " + winner + " - differenza significativa" if confidence > 80 else "\u9888 \u65039  Continua test - dati insufficienti per conclusione definitiva"\}\
+"""\
+            except Exception as e:\
+                return f"Errore parsing: \{str(e)\}"\
+        \
+        def weekly_report_generator(artist: str = None) -> str:\
+            """Genera report settimanale automatico"""\
+            return self.reporter.generate_weekly_report(artist)\
+        \
+        def search_knowledge_base(query: str) -> str:\
+            """Cerca strategie e best practices"""\
+            retriever = self.vectordb.as_retriever(search_kwargs=\{"k": 4\})\
+            docs = retriever.get_relevant_documents(query)\
+            \
+            if not docs:\
+                return "Nessuna strategia trovata. Aggiungi knowledge con add_knowledge()."\
+            \
+            results = "\\n\\n---\\n\\n".join([\
+                f"\uc0\u55357 \u56538  \{doc.metadata.get('tipo', 'Strategia')\}:\\n\{doc.page_content\}"\
+                for doc in docs\
+            ])\
+            \
+            return results\
+        \
+        return [\
+            Tool(\
+                name="Advanced_Campaign_Analytics",\
+                func=advanced_campaign_analysis,\
+                description="Analisi avanzata campagne con ottimizzazione budget e raccomandazioni strategiche. Usa per domande su performance, ROI, budget allocation."\
+            ),\
+            Tool(\
+                name="Professional_Content_Generator",\
+                func=generate_professional_content,\
+                description="Genera contenuti marketing professionali (Meta ads, Spotify pitch, Instagram captions, TikTok scripts, email). Specifica tipo e contesto."\
+            ),\
+            Tool(\
+                name="Competitor_Intelligence",\
+                func=competitor_intelligence,\
+                description="Analisi completa competitor con metriche, trend e insights strategici. Richiede nome artista competitor."\
+            ),\
+            Tool(\
+                name="Predictive_Analytics",\
+                func=predictive_forecast,\
+                description="Previsioni crescita streams, trend analysis e forecasting. Usa per pianificazione strategica."\
+            ),\
+            Tool(\
+                name="AB_Test_Analyzer",\
+                func=ab_test_analyzer,\
+                description="Analizza risultati A/B test e determina winner statisticamente. Formato input: 'variantA:clicks:conv variantB:clicks:conv'"\
+            ),\
+            Tool(\
+                name="Weekly_Report",\
+                func=weekly_report_generator,\
+                description="Genera report settimanale automatico con metriche, best/worst campaigns, raccomandazioni."\
+            ),\
+            Tool(\
+                name="Knowledge_Base_Search",\
+                func=search_knowledge_base,\
+                description="Cerca best practices, strategie, case study nella knowledge base. Usa per domande strategiche."\
+            )\
+        ]\
+    \
+    def add_knowledge(self, content: str, metadata: Dict = None):\
+        """Aggiungi strategia/best practice alla knowledge base"""\
+        splitter = RecursiveCharacterTextSplitter(\
+            chunk_size=1000,\
+            chunk_overlap=200\
+        )\
+        \
+        docs = splitter.create_documents([content], metadatas=[metadata or \{\}])\
+        self.vectordb.add_documents(docs)\
+        self.vectordb.persist()\
+        print(f"\uc0\u9989  Knowledge aggiunta: \{metadata.get('tipo', 'Generale')\}")\
+    \
+    def add_campaign(self, data: Dict):\
+        """Salva campagna nel database"""\
+        campaign_id = self.db.add_campaign(data)\
+        print(f"\uc0\u9989  Campagna salvata (ID: \{campaign_id\})")\
+        return campaign_id\
+    \
+    def track_competitor(self, data: Dict):\
+        """Traccia competitor"""\
+        self.db.track_competitor(data)\
+        print(f"\uc0\u9989  Competitor tracked: \{data['competitor_name']\}")\
+    \
+    def add_streaming_data(self, data: Dict):\
+        """Aggiungi metriche streaming"""\
+        self.db.add_streaming_data(data)\
+        print(f"\uc0\u9989  Streaming data aggiunto: \{data['artist']\} - \{data['track_name']\}")\
+    \
+    def chat(self, message: str) -> str:\
+        """Interfaccia conversazionale"""\
+        try:\
+            response = self.agent.run(message)\
+            return response\
+        except Exception as e:\
+            return f"\uc0\u10060  Errore: \{str(e)\}\\n\\nProva a riformulare o usa un comando specifico."\
+    \
+    def get_spotify_data(self, artist_id: str) -> Dict:\
+        """Recupera dati Spotify"""\
+        return self.api.get_spotify_artist_data(artist_id)\
+    \
+    def get_instagram_stats(self, username: str) -> Dict:\
+        """Recupera stats Instagram"""\
+        return self.api.get_instagram_profile_stats(username)\
+\
+\
+# ============ ESEMPIO UTILIZZO COMPLETO ============\
+\
+def demo_workflow():\
+    """Dimostra workflow completo da manager musicale professionista"""\
+    \
+    print("\uc0\u55356 \u57269  MUSIC MARKETING AI PRO - Demo Workflow\\n")\
+    print("="*70)\
+    \
+    # Inizializza sistema\
+    ai = MusicMarketingAIPro(model_name="llama3.1:8b")\
+    \
+    print("\\n\uc0\u55357 \u56538  FASE 1: Popolamento Knowledge Base")\
+    print("-" * 70)\
+    \
+    # Aggiungi strategie professionali\
+    strategies = [\
+        \{\
+            "content": """\
+STRATEGIA META ADS TRAP 2024/2025:\
+\
+TARGETING:\
+\'95 Core audience: 18-34, Italia + Svizzera italiana\
+\'95 Interessi: Spotify, Apple Music, Festival rap (MI AMI, Rock in Roma)\
+\'95 Lookalike: 1% fan artisti simili (Gu\'e8, Marracash, Sfera, Geolier)\
+\'95 Retargeting: Visitatori Spotify ultimi 30gg\
+\
+CREATIVE:\
+\'95 Video: 15 sec snippet + lyrics animate\
+\'95 Carosello: 3 slide (cover + screenshot playlist + streaming proof)\
+\'95 Story ads: Behind the scenes + snippet\
+\
+BUDGET:\
+\'95 Test: \'8050/gg x 3 giorni\
+\'95 Scaling: +20% ogni 48h se ROAS > 2x\
+\'95 Kill rule: Pausa se ROAS < 1.2x dopo 72h\
+\
+OBIETTIVI:\
+\'95 Awareness: CPM < \'804\
+\'95 Conversioni: Evento custom "Play 30 sec" su Spotify\
+\'95 Target ROAS: 2.5x minimo\
+""",\
+            "metadata": \{"tipo": "strategia_ads", "piattaforma": "meta", "genere": "trap", "anno": "2024"\}\
+        \},\
+        \{\
+            "content": """\
+PITCH SPOTIFY PLAYLIST - Formula Vincente:\
+\
+STRUTTURA (max 500 char):\
+1. Opening personale: "Ciao [nome curator], seguo [playlist] da tempo"\
+2. Hook brano: Descrizione sonora in 1 frase + mood\
+3. Perch\'e9 fit: Connessione con vibe playlist e altri brani\
+4. Credibilit\'e0: Metriche (X stream, Y playlist, feature con Z)\
+5. CTA: "Sarebbe un onore" + link SubmitHub/email direct\
+\
+TONE:\
+\'95 Professionale ma caldo\
+\'95 Specifico (cita 2-3 brani nella playlist)\
+\'95 No generic pitch\
+\'95 Dimostra conoscenza curator\
+\
+TIMING:\
+\'95 Gioved\'ec pre-release\
+\'95 Follow up dopo 1 settimana se no response\
+""",\
+            "metadata": \{"tipo": "best_practice", "piattaforma": "spotify", "funzione": "pitching"\}\
+        \},\
+        \{\
+            "content": """\
+COMPETITOR ANALYSIS FRAMEWORK:\
+\
+METRICHE DA TRACCIARE:\
+1. Social:\
+   - Instagram: Followers, ER%, posting frequency, content pillars\
+   - TikTok: Views medi, viral ratio, sound trending\
+   \
+2. Streaming:\
+   - Spotify: Monthly listeners, playlist presence, growth rate\
+   - YouTube: Views, subscriber growth\
+   \
+3. Content strategy:\
+   - Calendario release (pattern)\
+   - Collaborazioni strategiche\
+   - Visual identity evolution\
+   \
+4. Advertising:\
+   - Meta Ad Library: Active campaigns, copy style, creative\
+   - Sponsored content su IG\
+\
+FREQUENZA:\
+\'95 Competitor principali: Ogni 2 settimane\
+\'95 Emerging artists: Mensile\
+\'95 Top tier: Monitoraggio continuo\
+\
+TOOLS:\
+\'95 Social Blade (trend)\
+\'95 Chartmetric (streaming)\
+\'95 Meta Ad Library (ads)\
+\'95 Manual tracking (content quality)\
+""",\
+            "metadata": \{"tipo": "framework", "funzione": "competitor_research"\}\
+        \}\
+    ]\
+    \
+    for strategy in strategies:\
+        ai.add_knowledge(strategy["content"], strategy["metadata"])\
+    \
+    print("\\n\uc0\u55357 \u56510  FASE 2: Inserimento Dati Campagne Storiche")\
+    print("-" * 70)\
+    \
+    # Aggiungi campagne esempio\
+    campaigns = [\
+        \{\
+            "campaign_name": "Release Singolo - Notte Fonda",\
+            "artist": "Artist A",\
+            "release_type": "single",\
+            "platform": "Meta",\
+            "date": "2024-11-01",\
+            "spend": 250.00,\
+            "impressions": 78000,\
+            "clicks": 1560,\
+            "ctr": 2.0,\
+            "cpm": 3.21,\
+            "cpc": 0.16,\
+            "conversions": 890,\
+            "conversion_type": "Spotify 30s play",\
+            "roas": 2.8,\
+            "notes": "Target 18-25, lookalike Sfera + Gu\'e8"\
+        \},\
+        \{\
+            "campaign_name": "Promo Video - Strada",\
+            "artist": "Artist A",\
+            "release_type": "video",\
+            "platform": "TikTok",\
+            "date": "2024-11-08",\
+            "spend": 180.00,\
+            "impressions": 245000,\
+            "clicks": 4900,\
+            "ctr": 2.0,\
+            "cpm": 0.73,\
+            "cpc": 0.037,\
+            "conversions": 1200,\
+            "conversion_type": "Video views 6s",\
+            "roas": 1.9,\
+            "notes": "Sound trending + challenge"\
+        \},\
+        \{\
+            "campaign_name": "Release Album - Mixtape Vol.1",\
+            "artist": "Artist B",\
+            "release_type": "album",\
+            "platform": "Meta",\
+            "date": "2024-11-15",\
+            "spend": 450.00,\
+            "impressions": 125000,\
+            "clicks": 2750,\
+            "ctr": 2.2,\
+            "cpm": 3.60,\
+            "cpc": 0.16,\
+            "conversions": 2100,\
+            "conversion_type": "Spotify saves",\
+            "roas": 3.2,\
+            "notes": "Retargeting + lookalike top 1%"\
+        \},\
+        \{\
+            "campaign_name": "Boost Post Instagram",\
+            "artist": "Artist B",\
+            "release_type": "content",\
+            "platform": "Instagram",\
+            "date": "2024-11-20",\
+            "spend": 80.00,\
+            "impressions": 34000,\
+            "clicks": 680,\
+            "ctr": 2.0,\
+            "cpm": 2.35,\
+            "cpc": 0.12,\
+            "conversions": 120,\
+            "conversion_type": "Profile visits",\
+            "roas": 0.9,\
+            "notes": "Test audience interessi festival"\
+        \}\
+    ]\
+    \
+    for camp in campaigns:\
+        ai.add_campaign(camp)\
+    \
+    print("\\n\uc0\u55357 \u56522  FASE 3: Tracking Competitor")\
+    print("-" * 70)\
+    \
+    competitors_data = [\
+        \{\
+            "competitor_name": "Geolier",\
+            "date": "2024-11-25",\
+            "instagram_followers": 2800000,\
+            "instagram_engagement_rate": 4.8,\
+            "spotify_monthly_listeners": 4500000,\
+            "youtube_subscribers": 890000,\
+            "recent_release": "El Pibe De Oro",\
+            "strategy_notes": "Focus su autenticit\'e0 napoletana, storytelling personale, feature strategiche con pop/mainstream"\
+        \},\
+        \{\
+            "competitor_name": "Lazza",\
+            "date": "2024-11-25",\
+            "instagram_followers": 1900000,\
+            "instagram_engagement_rate": 3.2,\
+            "spotify_monthly_listeners": 3200000,\
+            "youtube_subscribers": 750000,\
+            "recent_release": "Panico",\
+            "strategy_notes": "Estetica dark/cinematografica, produzione ricercata, collab con producer internazionali"\
+        \}\
+    ]\
+    \
+    for comp in competitors_data:\
+        ai.track_competitor(comp)\
+    \
+    print("\\n\uc0\u55356 \u57255  FASE 4: Dati Streaming")\
+    print("-" * 70)\
+    \
+    # Simula 14 giorni di streaming per predictive analytics\
+    base_streams = 5000\
+    for i in range(14):\
+        date = (datetime.now() - timedelta(days=14-i)).date()\
+        streams = int(base_streams * (1 + (i * 0.08)))  # Crescita 8% giornaliera\
+        \
+        ai.add_streaming_data(\{\
+            "artist": "Artist A",\
+            "track_name": "Notte Fonda",\
+            "date": str(date),\
+            "spotify_streams": streams,\
+            "spotify_saves": int(streams * 0.15),\
+            "spotify_playlist_adds": int(streams * 0.08),\
+            "youtube_views": int(streams * 0.3),\
+            "apple_plays": int(streams * 0.2),\
+            "total_streams": int(streams * 1.5)\
+        \})\
+    \
+    print("\\n" + "="*70)\
+    print("\uc0\u9989  SISTEMA COMPLETAMENTE CONFIGURATO")\
+    print("="*70)\
+    \
+    # Test conversazioni\
+    print("\\n\\n\uc0\u55357 \u56492  ESEMPI DI CONVERSAZIONI\\n")\
+    \
+    test_queries = [\
+        "Analizza le performance delle mie campagne e dimmi come ottimizzare il budget",\
+        "Genera un copy Meta Ads per il lancio del nuovo singolo trap 'Luci Della Citt\'e0'",\
+        "Fammi un'analisi competitor su Geolier - cosa posso imparare dalla sua strategia?",\
+        "Prevedi la crescita streams per i prossimi 7 giorni e dimmi se devo aumentare le ads",\
+        "Genera il report settimanale con tutte le metriche"\
+    ]\
+    \
+    for i, query in enumerate(test_queries, 1):\
+        print(f"\\n\{'='*70\}")\
+        print(f"\uc0\u55357 \u56803 \u65039   QUERY \{i\}: \{query\}")\
+        print(f"\{'='*70\}\\n")\
+        \
+        response = ai.chat(query)\
+        print(f"\uc0\u55358 \u56598  AI: \{response\}\\n")\
+        \
+        if i < len(test_queries):\
+            input("Premi ENTER per la prossima query...")\
+    \
+    return ai\
+\
+\
+if __name__ == "__main__":\
+    # Esegui demo completa\
+    ai_system = demo_workflow()\
+    \
+    # Loop interattivo\
+    print("\\n" + "="*70)\
+    print("\uc0\u55356 \u57269  MODALIT\'c0 INTERATTIVA")\
+    print("="*70)\
+    print("\\nComandi speciali:")\
+    print("  \'95 'report' - Genera report settimanale")\
+    print("  \'95 'add campaign' - Aggiungi nuova campagna")\
+    print("  \'95 'track competitor' - Traccia nuovo competitor")\
+    print("  \'95 'exit' - Esci\\n")\
+    \
+    while True:\
+        user_input = input("\\n\uc0\u55357 \u56803 \u65039   Tu: ")\
+        \
+        if user_input.lower() in ['exit', 'quit', 'esci']:\
+            print("\\n\uc0\u55357 \u56395  Alla prossima!")\
+            break\
+        \
+        if not user_input.strip():\
+            continue\
+        \
+        print("\\n\uc0\u55358 \u56598  AI: ", end="")\
+        response = ai_system.chat(user_input)\
+        print(response) = f"""\
+\uc0\u55357 \u56522  ANALISI CAMPAGNE (ultimi 30gg)\
+\
+OVERVIEW:\
+\'95 Campagne totali: \{stats['total_campaigns']\}\
+\'95 Spesa totale: \'80\{stats['total_spend']:,.2f\}\
+\'95 ROAS medio: \{stats['avg_roas']:.2f\}x\
+\'95 Piattaforma migliore: \{stats['best_platform']\}\
+\
+\uc0\u55357 \u56481  OTTIMIZZAZIONE BUDGET:\
+"""\
+                for rec in optimization['recommendations']:\
+                    result += f"\\n\'95 \{rec['platform']\}: \{rec['recommended_budget_percentage']\}% del budget"\
+                    result += f"\\n  \uc0\u9492 \u9472  \{rec['rationale']\}"\
+                \
+                return result\
+                \
+            except Exception as e:\
+                return f"Errore nell'analisi: \{str(e)\}"\
+        \
+        def generate_professional_content(brief: str) -> str:\
+            """Genera contenuti marketing con template professionali"""\
+            \
+            # Determina tipo contenuto\
+            content_type = "meta_ad"\
+            if "spotify" in brief.lower() or "playlist" in brief.lower():\
+                content_type = "spotify_pitch"\
+            elif "instagram" in brief.lower() or "caption" in brief.lower():\
+                content_type = "instagram_caption"\
+            elif "tiktok" in brief.lower():\
+                content_type = "tiktok_script"\
+            elif "email" in brief.lower():\
+                content_type = "email_campaign"\
+            \
+            templates = \{\
+                "meta_ad": """\
+Sei un copywriter esperto di Meta Ads per musica. Crea un copy per: \{brief\}\
+\
+STRUTTURA:\
+1. HEADLINE (max 40 caratteri): Hook potentissimo\
+2. PRIMARY TEXT (125 caratteri): \
+   - Prima riga: hook emotivo\
+   - Pain point audience\
+   - Benefit chiaro\
+   - CTA forte\
+3. DESCRIPTION (30 caratteri): Rinforzo CTA\
+4. 3 VARIANTI per A/B test\
+\
+TONE: Diretto, emotivo, urban se trap/rap\
+EMOJI: Max 3, strategici\
+TARGET: 18-34 anni, appassionati \{genere\}\
+""",\
+                "spotify_pitch": """\
+Crea un pitch professionale per playlist curator Spotify: \{brief\}\
+\
+ELEMENTI CHIAVE:\
+\'95 Opening: Perch\'e9 questo brano \'e8 perfetto per la playlist\
+\'95 Artista: Bio concisa e credibilit\'e0 (stream, collaborazioni, press)\
+\'95 Brano: Descrizione sonora e mood\
+\'95 Metriche: Dati di engagement se disponibili\
+\'95 Hook finale: Valore aggiunto per la playlist\
+\
+LUNGHEZZA: 300-500 caratteri\
+TONE: Professionale ma appassionato\
+""",\
+                "instagram_caption": """\
+Crea caption Instagram per: \{brief\}\
+\
+STRUTTURA:\
+1. HOOK (prima riga): Stop scrolling immediato\
+2. BODY: Storytelling o valore (3-5 righe)\
+3. CTA: Chiamata all'azione chiara\
+4. HASHTAG: 12-15 mirati (mix di grande/medio/piccolo volume)\
+\
+LINEE GUIDA:\
+\'95 Emoji: 4-6 strategici\
+\'95 Breakline ogni 2-3 righe per leggibilit\'e0\
+\'95 Tone: Autentico, relazionabile\
+\'95 Lunghezza: 150-200 caratteri corpo + hashtag\
+""",\
+                "tiktok_script": """\
+Crea script TikTok per: \{brief\}\
+\
+FORMATO (15-30 sec):\
+\'95 0-3 sec: HOOK visivo/verbale (ferma scroll)\
+\'95 3-10 sec: Setup/problema/trend\
+\'95 10-20 sec: Payoff/reveal/soluzione\
+\'95 20-30 sec: CTA + call to action audio\
+\
+ELEMENTI:\
+\'95 Text overlay per ogni sezione\
+\'95 Sound suggerito\
+\'95 Transition ideas\
+\'95 Hashtag challenge potential\
+\
+TONE: Fast-paced, entertaining, memable\
+"""\
+            \}\
+            \
+            template = templates.get(content_type, templates["meta_ad"])\
+            prompt = template.format(brief=brief, genere="trap/rap")  # Personalizza genere\
+            \
+            return self.llm(prompt)\
+        \
+        def competitor_intelligence(competitor: str) -> str:\
+            """Intelligence completa su competitor"""\
+            \
+            # Cerca dati salvati\
+            query = f"SELECT * FROM competitors WHERE competitor_name LIKE '%\{competitor\}%' ORDER BY date DESC LIMIT 5"\
+            df = pd.read_sql_query(query, self.db.conn)\
+            \
+            if df.empty:\
+                # Prova scraping live (se configurato)\
+                instagram_data = self.api.get_instagram_profile_stats(competitor)\
+                \
+                if 'error' not in instagram_data:\
+                    return f"""\
+\uc0\u55357 \u56589  COMPETITOR ANALYSIS: \{competitor\}\
+\
+INSTAGRAM:\
+\'95 Followers: \{instagram_data.get('followers', 'N/A'):,\}\
+\'95 Engagement rate: \{instagram_data.get('engagement_rate', 'N/A')\}%\
+\'95 Post: \{instagram_data.get('posts', 'N/A')\}\
+\
+\uc0\u55357 \u56481  Per analisi completa, traccia questo competitor con track_competitor()\
+"""\
+                \
+                return f"Nessun dato per \{competitor\}. Usa track_competitor() per iniziare tracking."\
+            \
+            # Analizza trend\
+            latest = df.iloc[0]\
+            oldest = df.iloc[-1]\
+            \
+            follower_growth = ((latest['instagram_followers'] - oldest['instagram_followers']) / \
+                             oldest['instagram_followers'] * 100) if oldest['instagram_followers'] > 0 else 0\
+            \
+            return f"""\
+\uc0\u55357 \u56589  COMPETITOR INTELLIGENCE: \{competitor\}\
+\
+\uc0\u55357 \u56522  METRICHE ATTUALI:\
+\'95 Instagram followers: \{latest['instagram_followers']:,\}\
+\'95 Engagement rate: \{latest['instagram_engagement_rate']:.2f\}%\
+\'95 Spotify monthly listeners: \{latest['spotify_monthly_listeners']:,\}\
+\
+\uc0\u55357 \u56520  TREND (ultimi \{len(df)\} tracking):\
+\'95 Crescita followers: \{follower_growth:+.1f\}%\
+\'95 Release recente: \{latest['recent_release']\}\
+\
+\uc0\u55357 \u56541  NOTE STRATEGICHE:\
+\{latest['strategy_notes']\}\
+\
+\uc0\u55357 \u56481  INSIGHTS:\
+\'95 Frequenza posting: [Analizza pattern]\
+\'95 Best performing content: [Identifica trend]\
+\'95 Collaborazioni: [Lista feature e collab]\
+"""\
+        \
+        def predictive_forecast(query: str) -> str:\
+            """Previsioni e forecasting"""\
+            \
+            # Recupera dati streaming\
+            streaming_query = "SELECT * FROM streaming_metrics ORDER BY date DESC LIMIT 30"\
+            df = pd.read_sql_query(streaming_query, self.db.conn)\
+            \
+            if df.empty:\
+                return "Nessun dato streaming. Aggiungi dati con add_streaming_data()."\
+            \
+            # Predizione crescita\
+            predictions = self.analytics.predict_stream_growth(df, days_ahead=7)\
+            \
+            if 'error' in predictions:\
+                return predictions['error']\
+            \
+            result}
