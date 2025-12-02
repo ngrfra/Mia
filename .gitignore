@@ -1,1 +1,6 @@
 venv/
+*.db
+*.zip
+*.DS_Store
+__pycache__/
+knowledge_docs/
